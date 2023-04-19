@@ -1411,7 +1411,7 @@ _.dom_query = (function() {
 })();
 
 _.info = {
-    campaignParams: function() {
+    campaignParams: function(default_value) {
         var campaign_keywords = 'utm_source utm_medium utm_campaign utm_content utm_term'.split(' '),
             kw = '',
             params = {};
@@ -1419,10 +1419,30 @@ _.info = {
             kw = _.getQueryParam(document.URL, kwkey);
             if (kw.length) {
                 params[kwkey] = kw;
+            } else if (default_value !== undefined) {
+                params[kwkey] = default_value;
             }
         });
 
         return params;
+    },
+
+    clickParams: function() {
+        var click_ids = ['dclid', 'fbclid', 'gclid', 'ko_click_id', 'li_fat_id', 'msclkid', 'ttclid', 'twclid', 'wbraid'],
+            id = '',
+            params = {};
+        _.each(click_ids, function(idkey) {
+            id = _.getQueryParam(document.URL, idkey);
+            if (id.length) {
+                params[idkey] = id;
+            }
+        });
+
+        return params;
+    },
+
+    marketingParams: function() {
+        return _.extend(_.info.campaignParams(), _.info.clickParams());
     },
 
     searchEngine: function(referrer) {
@@ -1621,12 +1641,13 @@ _.info = {
         });
     },
 
-    pageviewInfo: function(page) {
+    mpPageViewProperties: function() {
         return _.strip_empty_properties({
-            'mp_page': page,
-            'mp_referrer': document.referrer,
-            'mp_browser': _.info.browser(userAgent, navigator.vendor, windowOpera),
-            'mp_platform': _.info.os()
+            'current_page_title': document.title,
+            'current_domain': win.location.hostname,
+            'current_url_path': win.location.pathname,
+            'current_url_protocol': win.location.protocol,
+            'current_url_search': win.location.search
         });
     }
 };

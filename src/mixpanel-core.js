@@ -99,8 +99,11 @@ var DEFAULT_CONFIG = {
     'cookie_domain':                     '',
     'cookie_name':                       '',
     'loaded':                            NOOP_FUNC,
+    'track_marketing':                   false,
     'store_google':                      true,
     'save_referrer':                     true,
+    'track_pageview':                    false,
+    'skip_first_touch_marketing':        false,
     'test':                              false,
     'verbose':                           false,
     'img':                               false,
@@ -164,6 +167,25 @@ var create_mplib = function(token, config, name) {
 
     instance['people'] = new MixpanelPeople();
     instance['people']._init(instance);
+
+    if (!instance.get_config('skip_first_touch_marketing')) {
+        // We need null UTM params in the object because
+        // UTM parameters act as a tuple. If any UTM param
+        // is present, then we set all UTM params including
+        // empty ones together
+        var utm_params = _.info.campaignParams(null);
+        var initial_utm_params = {};
+        var has_utm = false;
+        _.each(utm_params, function(utm_value, utm_key) {
+            initial_utm_params['initial_' + utm_key] = utm_value;
+            if (utm_value) {
+                has_utm = true;
+            }
+        });
+        if (has_utm) {
+            instance['people'].set_once(initial_utm_params);
+        }
+    }
 
     // if any instance on the page has debug = true, we set the
     // global debug to be true
@@ -309,6 +331,10 @@ MixpanelLib.prototype._init = function(token, config, name) {
             '$device_id': uuid
         }, '');
     }
+
+    if (this.get_config('track_pageview')) {
+        this.track_pageview();
+    }
 };
 
 // Private methods
@@ -322,7 +348,7 @@ MixpanelLib.prototype._loaded = function() {
 MixpanelLib.prototype._set_default_superprops = function() {
     this['persistence'].update_search_keyword(document.referrer);
     if (this.get_config('store_google')) {
-        this['persistence'].update_campaign_params();
+        this.register(_.info.campaignParams(), {persistent: false});
     }
     if (this.get_config('save_referrer')) {
         this['persistence'].update_referrer_info(document.referrer);
@@ -804,6 +830,10 @@ MixpanelLib.prototype.track = addOptOutCheckMixpanelLib(function(event_name, pro
 
     this._set_default_superprops();
 
+    var marketing_properties = this.get_config('track_marketing')
+        ? _.info.marketingParams()
+        : {};
+
     // note: extend writes to the first object, so lets make sure we
     // don't write to the persistence properties object and info
     // properties object by passing in a new object
@@ -814,6 +844,7 @@ MixpanelLib.prototype.track = addOptOutCheckMixpanelLib(function(event_name, pro
         _.info.properties(),
         this['persistence'].properties(),
         this.unpersisted_superprops,
+        marketing_properties,
         properties
     );
 
@@ -972,17 +1003,28 @@ MixpanelLib.prototype.get_group = function (group_key, group_id) {
 };
 
 /**
- * Track mp_page_view event. This is now ignored by the server.
+ * Track $mp_web_page_view event.
  *
- * @param {String} [page] The url of the page to record. If you don't include this, it defaults to the current url.
- * @deprecated
+ * @param {String} [event_name] Optional event name for the page view event.
+ * @param {String} [properties] Optional properties to add to the page view event.
  */
-MixpanelLib.prototype.track_pageview = function(page) {
-    if (_.isUndefined(page)) {
-        page = document.location.href;
-    }
-    this.track('mp_page_view', _.info.pageviewInfo(page));
-};
+MixpanelLib.prototype.track_pageview = addOptOutCheckMixpanelLib(function(event_name, properties) {
+    event_name = event_name || '$mp_web_page_view';
+    properties = properties || {};
+
+    var default_page_properties = _.extend(
+        _.info.mpPageViewProperties(),
+        _.info.campaignParams(),
+        _.info.clickParams()
+    );
+
+    var event_properties = _.extend(
+        {},
+        default_page_properties,
+        properties
+    );
+    this.track(event_name, event_properties);
+});
 
 /**
  * Track clicks on a set of document elements. Selector must be a

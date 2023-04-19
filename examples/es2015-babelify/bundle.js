@@ -771,8 +771,11 @@ var DEFAULT_CONFIG = {
     'cookie_domain': '',
     'cookie_name': '',
     'loaded': NOOP_FUNC,
+    'track_marketing': false,
     'store_google': true,
     'save_referrer': true,
+    'track_pageview': false,
+    'skip_first_touch_marketing': false,
     'test': false,
     'verbose': false,
     'img': false,
@@ -835,6 +838,25 @@ var create_mplib = function create_mplib(token, config, name) {
 
     instance['people'] = new _mixpanelPeople.MixpanelPeople();
     instance['people']._init(instance);
+
+    if (!instance.get_config('skip_first_touch_marketing')) {
+        // We need null UTM params in the object because
+        // UTM parameters act as a tuple. If any UTM param
+        // is present, then we set all UTM params including
+        // empty ones together
+        var utm_params = _utils._.info.campaignParams(null);
+        var initial_utm_params = {};
+        var has_utm = false;
+        _utils._.each(utm_params, function (utm_value, utm_key) {
+            initial_utm_params['initial_' + utm_key] = utm_value;
+            if (utm_value) {
+                has_utm = true;
+            }
+        });
+        if (has_utm) {
+            instance['people'].set_once(initial_utm_params);
+        }
+    }
 
     // if any instance on the page has debug = true, we set the
     // global debug to be true
@@ -980,6 +1002,10 @@ MixpanelLib.prototype._init = function (token, config, name) {
             '$device_id': uuid
         }, '');
     }
+
+    if (this.get_config('track_pageview')) {
+        this.track_pageview();
+    }
 };
 
 // Private methods
@@ -993,7 +1019,7 @@ MixpanelLib.prototype._loaded = function () {
 MixpanelLib.prototype._set_default_superprops = function () {
     this['persistence'].update_search_keyword(_utils.document.referrer);
     if (this.get_config('store_google')) {
-        this['persistence'].update_campaign_params();
+        this.register(_utils._.info.campaignParams(), { persistent: false });
     }
     if (this.get_config('save_referrer')) {
         this['persistence'].update_referrer_info(_utils.document.referrer);
@@ -1470,12 +1496,14 @@ MixpanelLib.prototype.track = (0, _gdprUtils.addOptOutCheckMixpanelLib)(function
 
     this._set_default_superprops();
 
+    var marketing_properties = this.get_config('track_marketing') ? _utils._.info.marketingParams() : {};
+
     // note: extend writes to the first object, so lets make sure we
     // don't write to the persistence properties object and info
     // properties object by passing in a new object
 
     // update properties with pageview info and super-properties
-    properties = _utils._.extend({}, _utils._.info.properties(), this['persistence'].properties(), this.unpersisted_superprops, properties);
+    properties = _utils._.extend({}, _utils._.info.properties(), this['persistence'].properties(), this.unpersisted_superprops, marketing_properties, properties);
 
     var property_blacklist = this.get_config('property_blacklist');
     if (_utils._.isArray(property_blacklist)) {
@@ -1632,17 +1660,20 @@ MixpanelLib.prototype.get_group = function (group_key, group_id) {
 };
 
 /**
- * Track mp_page_view event. This is now ignored by the server.
+ * Track $mp_web_page_view event.
  *
- * @param {String} [page] The url of the page to record. If you don't include this, it defaults to the current url.
- * @deprecated
+ * @param {String} [event_name] Optional event name for the page view event.
+ * @param {String} [properties] Optional properties to add to the page view event.
  */
-MixpanelLib.prototype.track_pageview = function (page) {
-    if (_utils._.isUndefined(page)) {
-        page = _utils.document.location.href;
-    }
-    this.track('mp_page_view', _utils._.info.pageviewInfo(page));
-};
+MixpanelLib.prototype.track_pageview = (0, _gdprUtils.addOptOutCheckMixpanelLib)(function (event_name, properties) {
+    event_name = event_name || '$mp_web_page_view';
+    properties = properties || {};
+
+    var default_page_properties = _utils._.extend(_utils._.info.mpPageViewProperties(), _utils._.info.campaignParams(), _utils._.info.clickParams());
+
+    var event_properties = _utils._.extend({}, default_page_properties, properties);
+    this.track(event_name, event_properties);
+});
 
 /**
  * Track clicks on a set of document elements. Selector must be a
@@ -3555,13 +3586,6 @@ MixpanelPersistence.prototype.unregister = function (prop) {
     if (prop in this['props']) {
         delete this['props'][prop];
         this.save();
-    }
-};
-
-MixpanelPersistence.prototype.update_campaign_params = function () {
-    if (!this.campaign_params_saved) {
-        this.register_once(_utils._.info.campaignParams());
-        this.campaign_params_saved = true;
     }
 };
 
@@ -5980,7 +6004,7 @@ _.dom_query = (function () {
 })();
 
 _.info = {
-    campaignParams: function campaignParams() {
+    campaignParams: function campaignParams(default_value) {
         var campaign_keywords = 'utm_source utm_medium utm_campaign utm_content utm_term'.split(' '),
             kw = '',
             params = {};
@@ -5988,10 +6012,30 @@ _.info = {
             kw = _.getQueryParam(document.URL, kwkey);
             if (kw.length) {
                 params[kwkey] = kw;
+            } else if (default_value !== undefined) {
+                params[kwkey] = default_value;
             }
         });
 
         return params;
+    },
+
+    clickParams: function clickParams() {
+        var click_ids = ['dclid', 'fbclid', 'gclid', 'ko_click_id', 'li_fat_id', 'msclkid', 'ttclid', 'twclid', 'wbraid'],
+            id = '',
+            params = {};
+        _.each(click_ids, function (idkey) {
+            id = _.getQueryParam(document.URL, idkey);
+            if (id.length) {
+                params[idkey] = id;
+            }
+        });
+
+        return params;
+    },
+
+    marketingParams: function marketingParams() {
+        return _.extend(_.info.campaignParams(), _.info.clickParams());
     },
 
     searchEngine: function searchEngine(referrer) {
@@ -6190,12 +6234,13 @@ _.info = {
         });
     },
 
-    pageviewInfo: function pageviewInfo(page) {
+    mpPageViewProperties: function mpPageViewProperties() {
         return _.strip_empty_properties({
-            'mp_page': page,
-            'mp_referrer': document.referrer,
-            'mp_browser': _.info.browser(userAgent, navigator.vendor, windowOpera),
-            'mp_platform': _.info.os()
+            'current_page_title': document.title,
+            'current_domain': win.location.hostname,
+            'current_url_path': win.location.pathname,
+            'current_url_protocol': win.location.protocol,
+            'current_url_search': win.location.search
         });
     }
 };
